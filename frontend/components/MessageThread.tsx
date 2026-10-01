@@ -24,6 +24,7 @@ import {
 import type { Message } from "@/utils/types";
 import { shortenAddress, timeAgo } from "@/utils/format";
 import clsx from "clsx";
+import { useVirtualizer } from "@tanstack/react-virtual";
 
 interface MessageThreadProps {
   jobId: string;
@@ -114,24 +115,27 @@ function AttachmentLine({ cid, name, mime, senderNaclPub }: AttachmentLineProps)
 // ── MessageThread ──────────────────────────────────────────────────────────────
 
 export default function MessageThread({ jobId, currentUserAddress, otherUserAddress }: MessageThreadProps) {
-  const [messages, setMessages]       = useState<Message[]>([]);
-  const [nextCursor, setNextCursor]   = useState<string | null>(null);
-  const [hasMore, setHasMore]         = useState(false);
-  const [loadingOlder, setLoadingOlder] = useState(false);
-  const [input, setInput]             = useState("");
-  const [sending, setSending]         = useState(false);
-  const [encrypting, setEncrypting]   = useState(false);
-  const [loading, setLoading]         = useState(true);
-  const [error, setError]             = useState<string | null>(null);
+  const [messages, setMessages]   = useState<Message[]>([]);
+  const [input, setInput]         = useState("");
+  const [sending, setSending]     = useState(false);
+  const [encrypting, setEncrypting] = useState(false);
+  const [loading, setLoading]     = useState(true);
+  const [error, setError]         = useState<string | null>(null);
 
-  const messagesEndRef            = useRef<HTMLDivElement>(null);
-  const messagesContainerRef      = useRef<HTMLDivElement>(null);
-  const inputRef                  = useRef<HTMLInputElement>(null);
-  const fileInputRef              = useRef<HTMLInputElement>(null);
-  const isMountedRef              = useRef<boolean>(true);
-  const shouldScrollToBottomRef   = useRef<boolean>(true);
+  const messagesEndRef       = useRef<HTMLDivElement>(null);
+  const messagesContainerRef = useRef<HTMLDivElement>(null);
+  const inputRef             = useRef<HTMLInputElement>(null);
+  const fileInputRef         = useRef<HTMLInputElement>(null);
+  const isMountedRef         = useRef<boolean>(true);
 
-  // Fetch initial messages on mount
+  const rowVirtualizer = useVirtualizer({
+    count: messages.length,
+    getScrollElement: () => messagesContainerRef.current,
+    estimateSize: () => 100,
+    overscan: 5,
+  });
+
+  // Fetch messages on mount
   useEffect(() => {
     isMountedRef.current = true;
     const loadMessages = async () => {
@@ -169,15 +173,20 @@ export default function MessageThread({ jobId, currentUserAddress, otherUserAddr
   }, [currentUserAddress]);
 
   const scrollToBottom = useCallback(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, []);
+    if (messages.length > 0) {
+      rowVirtualizer.scrollToIndex(messages.length - 1, { align: "end", behavior: "auto" });
+    }
+  }, [messages.length, rowVirtualizer]);
 
   useEffect(() => {
-    if (shouldScrollToBottomRef.current) {
-      scrollToBottom();
-      shouldScrollToBottomRef.current = false;
+    if (messages.length > 0 && messagesContainerRef.current) {
+      const scrollElement = messagesContainerRef.current;
+      const isScrolledNearBottom = scrollElement.scrollHeight - scrollElement.scrollTop - scrollElement.clientHeight < 150;
+      if (isScrolledNearBottom || loading) {
+         scrollToBottom();
+      }
     }
-  }, [messages, scrollToBottom]);
+  }, [messages.length, loading, scrollToBottom]);
 
   // Load older messages for infinite scroll
   const loadOlderMessages = useCallback(async () => {
@@ -360,8 +369,7 @@ export default function MessageThread({ jobId, currentUserAddress, otherUserAddr
       {/* Messages list */}
       <div
         ref={messagesContainerRef}
-        onScroll={handleScroll}
-        className="flex-1 overflow-y-auto px-4 py-4 space-y-3 min-h-[300px] max-h-[400px]"
+        className="flex-1 overflow-y-auto px-4 py-4 min-h-[300px] max-h-[400px]"
       >
         {/* Loading older messages indicator or manual load button */}
         {loadingOlder && (
@@ -390,40 +398,57 @@ export default function MessageThread({ jobId, currentUserAddress, otherUserAddr
             <p className="text-amber-800 text-sm">No messages yet. Start the conversation!</p>
           </div>
         ) : (
-          messages.map((msg) => {
-            const own = isOwnMessage(msg.senderAddress);
-            return (
-              <div
-                key={msg.id}
-                className={clsx(
-                  "flex flex-col max-w-[80%] rounded-2xl px-4 py-3",
-                  own
-                    ? "ml-auto bg-market-500/10 border border-market-500/15"
-                    : "bg-ink-800",
-                )}
-              >
-                <div className="flex items-center gap-2 mb-1">
-                  <span className="text-xs font-semibold text-market-400">
-                    {own ? "You" : shortenAddress(msg.senderAddress)}
-                  </span>
-                  <span className="text-[10px] text-amber-900">{timeAgo(msg.createdAt)}</span>
+          <div
+            style={{
+              height: `${rowVirtualizer.getTotalSize()}px`,
+              width: "100%",
+              position: "relative",
+            }}
+          >
+            {rowVirtualizer.getVirtualItems().map((virtualRow) => {
+              const msg = messages[virtualRow.index];
+              const own = isOwnMessage(msg.senderAddress);
+              return (
+                <div
+                  key={virtualRow.key}
+                  data-index={virtualRow.index}
+                  ref={rowVirtualizer.measureElement}
+                  className="absolute top-0 left-0 w-full py-1.5"
+                  style={{
+                    transform: `translateY(${virtualRow.start}px)`,
+                  }}
+                >
+                  <div
+                    className={clsx(
+                      "flex flex-col max-w-[80%] rounded-2xl px-4 py-3",
+                      own
+                        ? "ml-auto bg-market-500/10 border border-market-500/15"
+                        : "bg-ink-800",
+                    )}
+                  >
+                    <div className="flex items-center gap-2 mb-1">
+                      <span className="text-xs font-semibold text-market-400">
+                        {own ? "You" : shortenAddress(msg.senderAddress)}
+                      </span>
+                      <span className="text-[10px] text-amber-900">{timeAgo(msg.createdAt)}</span>
+                    </div>
+                    <p className="text-amber-100 text-sm leading-relaxed break-words">
+                      {msg.content}
+                    </p>
+                    {msg.attachmentCid && (
+                      <AttachmentLine
+                        cid={msg.attachmentCid}
+                        name={msg.attachmentName}
+                        mime={msg.attachmentMime}
+                        senderNaclPub={msg.senderNaclPub}
+                      />
+                    )}
+                  </div>
                 </div>
-                <p className="text-amber-100 text-sm leading-relaxed break-words">
-                  {msg.content}
-                </p>
-                {msg.attachmentCid && (
-                  <AttachmentLine
-                    cid={msg.attachmentCid}
-                    name={msg.attachmentName}
-                    mime={msg.attachmentMime}
-                    senderNaclPub={msg.senderNaclPub}
-                  />
-                )}
-              </div>
-            );
-          })
+              );
+            })}
+          </div>
         )}
-        <div ref={messagesEndRef} />
       </div>
 
       {/* Error banner (non-blocking) */}
